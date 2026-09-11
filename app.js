@@ -375,23 +375,23 @@ function openDigestPreview(){
    added to the task model later, add one entry here and the voice flow
    picks it up - the capture regexes below are built from these labels. */
 const VOICE_FIELDS = [
-  { key:"notes", labels:["note","notes"], capture:"rest" },
-  { key:"due", labels:["due by","due","deadline","by"], parse:parseDuePhrase, patterns:[
+  { key:"notes", display:"Notes", labels:["note","notes"], capture:"rest", example:"note …" },
+  { key:"due", display:"Due date", labels:["due by","due","deadline","by"], parse:parseDuePhrase, example:"due tomorrow · on Friday · in 3 days", patterns:[
     {re:/\bon\s+(the\s+\d{1,2}(?:st|nd|rd|th)?)/, useParse:true},
     {re:/\bon\s+((?:next\s+|this\s+)?(?:sun|mon|tue|wed|thu|fri|sat)[a-z]*)\b/, useParse:true},
     {re:/\bon\s+(\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)[a-z]*(?:\s+\d{4})?)/, useParse:true},
     {re:/\bon\s+((?:january|february|march|april|may|june|july|august|september|october|november|december)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?)/, useParse:true}
   ]},
-  { key:"owner", labels:["owner","assigned to","assign to","assigned"], fromList:"owners", implicit:true },
-  { key:"customer", labels:["customer","account","for"], fromList:"customers", implicit:true },
-  { key:"type", labels:["type","category"], fromList:"types", implicit:true },
-  { key:"priority", labels:[], patterns:[
+  { key:"owner", display:"Owner", labels:["owner","assigned to","assign to","assigned"], fromList:"owners", implicit:true, example:"owner {list}" },
+  { key:"customer", display:"Customer", labels:["customer","account","for"], fromList:"customers", implicit:true, example:"customer {list}" },
+  { key:"type", display:"Type", labels:["type","category"], fromList:"types", implicit:true, example:"type {list}" },
+  { key:"priority", display:"Priority", labels:[], example:"high priority · urgent · low priority", patterns:[
     {re:/\b(urgent|asap)\b/, value:"high"},
     {re:/\b(?:high|highest)\s+priority\b/, value:"high"},
     {re:/\bmedium\s+priority\b/, value:"med"},
     {re:/\blow\s+priority\b/, value:"low"}
   ]},
-  { key:"status", labels:[], patterns:[
+  { key:"status", display:"Status", labels:[], example:"in progress · mark it done", patterns:[
     {re:/\bstatus\s+in\s+progress\b/, value:"inprogress"},
     {re:/\bin\s+progress\b/, value:"inprogress"},
     {re:/\b(?:status|mark(?:\s+(?:it|as))?)\s+(?:done|complete|completed)\b/, value:"done"}
@@ -540,6 +540,21 @@ function parseVoice(raw){
 }
 
 let recog = null, recogText = "", recogActive = false;
+
+/* voice hint panel: built from VOICE_FIELDS so it stays accurate as fields change */
+function voiceHintsHTML(){
+  const rows = VOICE_FIELDS.map(f=>{
+    let ex = f.example || f.labels.map(l=>l+" …").join(" · ");
+    if(f.fromList){
+      const first = state[f.fromList] && state[f.fromList][0];
+      ex = ex.replace("{list}", first ? first.name : "…");
+    }
+    return '<div class="vh-row"><span class="vh-name">'+esc(f.display||f.key)+'</span><span class="vh-ex">'+esc(ex)+'</span></div>';
+  }).join("");
+  const o = state.owners[0]?state.owners[0].name:"Sara", c = state.customers[0]?state.customers[0].name:"Acme";
+  return '<div class="vh-lead">Say the task name, then any of these, in any order:</div>'+rows+
+    '<div class="vh-full">e.g. “Review the proposal owner '+esc(o)+' customer '+esc(c)+' due Friday high priority”</div>';
+}
 function voiceSupported(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
 function startVoice(){
   if(recogActive){ stopVoice(true); return; }
@@ -602,6 +617,7 @@ function openTaskModal(id, prefill){
   if(t.type && !state.types.some(o=>o.name===t.type)) t.type = blank.type;
   const heard = !id && prefill && prefill.heard;
   showModal('<div class="eyebrow">'+(id?"EDIT TASK":heard?"NEW TASK · FROM VOICE":"NEW TASK")+'</div><h2>'+(id?"Edit task":"Add a task")+'</h2>'+
+    (!id?'<button class="vh-btn" id="vhBtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>What can I say?</button><div class="vh-panel hidden" id="vhPanel"></div>':"")+
     (heard?'<div class="heard"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg><span>Heard: &ldquo;'+esc(prefill.heard)+'&rdquo;</span></div>':'')+
     '<div class="field"><label>Title</label><input class="input" id="fTitle" value="'+esc(t.title)+'" placeholder="What needs doing?"></div>'+
     '<div class="modal mrow">'+
@@ -622,6 +638,8 @@ function openTaskModal(id, prefill){
   let prio = t.priority, stat = t.status;
   $$("#fPrio button").forEach(b=>b.addEventListener("click", ()=>{ prio=b.dataset.p; $$("#fPrio button").forEach(x=>x.classList.toggle("active",x===b)); }));
   $$("#fStatus button").forEach(b=>b.addEventListener("click", ()=>{ stat=b.dataset.s; $$("#fStatus button").forEach(x=>x.classList.toggle("active",x===b)); }));
+  if(!id){ const p = $("#vhPanel"); p.innerHTML = voiceHintsHTML();
+    $("#vhBtn").addEventListener("click", ()=>p.classList.toggle("hidden")); }
   $("#taskCancel").addEventListener("click", closeModal);
   if(id) $("#taskDelete").addEventListener("click", ()=>{
     state.tasks = state.tasks.filter(x=>x.id!==id); save(); closeModal(); render(); toast("Task deleted");
