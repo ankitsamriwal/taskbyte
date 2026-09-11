@@ -707,7 +707,7 @@ function stopVoice(commit){
   else if(commit) toast("Didn't catch anything - tap the mic and try again");
 }
 /* test hook: simulate a dictated transcript end to end (parse + prefilled modal) */
-window.__tbVoiceTest = text => { openTaskModal(null, parseVoice(text)); };
+window.__tbVoiceTest = text => { const p = parseVoice(text); p.source = "voice"; openTaskModal(null, p); };
 
 /* ---------- task modal ---------- */
 function opts(list, sel){ return list.map(g=>'<option '+(g.name===sel?"selected":"")+'>'+esc(g.name)+'</option>').join(""); }
