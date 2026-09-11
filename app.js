@@ -586,6 +586,11 @@ function parseVoice(raw){
             }
           }
           if(name!=null){ res[f.key] = name; eat(m.index, capStart + frag.length); }
+          else {
+            /* spoken name is not in the configured lists - offer it as a new category */
+            const nm = m[1].trim().replace(/\s+/g," ").replace(/\b\w/g, ch=>ch.toUpperCase());
+            if(nm){ res[f.key+"New"] = nm; eat(m.index, capStart + m[1].length); }
+          }
         } else if(f.parse){
           /* walk the capture back word by word until the phrase resolves ("due tomorrow high" -> "tomorrow") */
           let frag = m[1], used = null;
@@ -672,13 +677,18 @@ function startVoice(){
   recog.continuous = true;
   recogText = "";
   recog.onresult = e=>{
-    let final = "", interim = "";
-    for(let i=0;i<e.results.length;i++){
-      if(e.results[i].isFinal) final += e.results[i][0].transcript;
-      else interim += e.results[i][0].transcript;
+    /* accumulate only final results; interim renders as one replacing hypothesis.
+       Mobile engines re-deliver earlier finals after internal restarts - dedupe
+       against text we already banked so nothing repeats. */
+    let interim = "";
+    for(let i=(e.resultIndex||0);i<e.results.length;i++){
+      const r = e.results[i], txt = r[0].transcript;
+      if(r.isFinal){
+        const clean = txt.trim();
+        if(clean && recogText.toLowerCase().indexOf(clean.toLowerCase())===-1) recogText += clean + " ";
+      } else interim = txt;
     }
-    recogText = final || recogText;
-    $("#voiceText").textContent = (final + " " + interim).trim() || "Listening…";
+    $("#voiceText").textContent = (recogText + interim).trim() || "Listening…";
   };
   recog.onerror = e=>{
     const err = e.error;
@@ -710,25 +720,30 @@ function stopVoice(commit){
 window.__tbVoiceTest = text => { const p = parseVoice(text); p.source = "voice"; openTaskModal(null, p); };
 
 /* ---------- task modal ---------- */
-function opts(list, sel){ return list.map(g=>'<option '+(g.name===sel?"selected":"")+'>'+esc(g.name)+'</option>').join(""); }
+function opts(list, sel, placeholder){
+  let h = "";
+  if(placeholder) h += '<option value=""'+(sel?"":" selected")+'>'+placeholder+'</option>';
+  h += list.map(g=>'<option '+(g.name===sel?"selected":"")+'>'+esc(g.name)+'</option>').join("");
+  if(sel && !list.some(g=>g.name===sel)) h += '<option selected value="'+esc(sel)+'">'+esc(sel)+' (new)</option>';
+  return h;
+}
 function openTaskModal(id, prefill){
   editingId = id || null;
   var newSource = (!id && prefill && prefill.source) ? prefill.source : "manual";
-  const blank = {title:"",owner:state.owners[0].name,customer:state.customers[0].name,type:state.types[0].name,status:"todo",due:dISO(todayStart()),priority:"med",notes:""};
-  const t = id ? state.tasks.find(x=>x.id===id) : Object.assign(blank, prefill||{});
-  if(t.owner && !state.owners.some(o=>o.name===t.owner)) t.owner = blank.owner;
-  if(t.customer && !state.customers.some(o=>o.name===t.customer)) t.customer = blank.customer;
-  if(t.type && !state.types.some(o=>o.name===t.type)) t.type = blank.type;
+  const blank = {title:"",owner:"",customer:"",type:"",status:"todo",due:"",priority:"med",notes:""};
+  const p = prefill ? Object.assign({}, prefill) : null;
+  if(p){ ["owner","customer","type"].forEach(k=>{ if(!p[k] && p[k+"New"]) p[k] = p[k+"New"]; }); }
+  const t = id ? state.tasks.find(x=>x.id===id) : Object.assign(blank, p||{});
   const heard = !id && prefill && prefill.heard;
   showModal('<div class="eyebrow">'+(id?"EDIT TASK":heard?"NEW TASK · FROM VOICE":"NEW TASK")+'</div><h2>'+(id?"Edit task":"Add a task")+'</h2>'+
     (!id?'<div class="vh-actions"><button class="vh-mic" id="modalMicBtn" aria-label="Add task by voice"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></button><button class="vh-btn" id="vhBtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>What can I say?</button></div><div class="vh-panel hidden" id="vhPanel"></div>':"")+
     (heard?'<div class="heard"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg><span>Heard: &ldquo;'+esc(prefill.heard)+'&rdquo;</span></div>':'')+
     '<div class="field"><label>Title</label><input class="input" id="fTitle" value="'+esc(t.title)+'" placeholder="What needs doing?"></div>'+
     '<div class="modal mrow">'+
-      '<div class="field"><label>Owner</label><select class="input" id="fOwner">'+opts(state.owners,t.owner)+'</select></div>'+
-      '<div class="field"><label>Customer</label><select class="input" id="fCustomer">'+opts(state.customers,t.customer)+'</select></div></div>'+
+      '<div class="field"><label>Owner</label><select class="input" id="fOwner">'+opts(state.owners,t.owner,id?null:"Select owner…")+'</select></div>'+
+      '<div class="field"><label>Customer</label><select class="input" id="fCustomer">'+opts(state.customers,t.customer,id?null:"Select customer…")+'</select></div></div>'+
     '<div class="modal mrow">'+
-      '<div class="field"><label>Type</label><select class="input" id="fType">'+opts(state.types,t.type)+'</select></div>'+
+      '<div class="field"><label>Type</label><select class="input" id="fType">'+opts(state.types,t.type,id?null:"Select type…")+'</select></div>'+
       '<div class="field"><label>Due date</label><input class="input" type="date" id="fDue" value="'+(t.due||"")+'"></div></div>'+
     '<div class="field"><label>Priority</label><div class="status-seg" id="fPrio">'+
       ["low","med","high"].map(p=>'<button data-p="'+p+'" class="'+(t.priority===p?"active":"")+'">'+p.toUpperCase()+'</button>').join("")+'</div></div>'+
@@ -758,6 +773,11 @@ function openTaskModal(id, prefill){
     const oldStatus = obj.status;
     obj.title=title; obj.owner=$("#fOwner").value; obj.customer=$("#fCustomer").value;
     obj.type=$("#fType").value; obj.due=$("#fDue").value||null; obj.priority=prio; obj.status=stat;
+    /* a category spoken or typed that was not configured (shown as "(new)") joins the lists on save */
+    [["owner","owners"],["customer","customers"],["type","types"]].forEach(([key,kind])=>{
+      const v = obj[key];
+      if(v && !state[kind].some(g=>g.name===v)) state[kind].push({name:v, color:PALETTE[state[kind].length % PALETTE.length]});
+    });
     obj.notes=$("#fNotes").value.trim(); obj.updatedAt=Date.now();
     if(wasNew){ obj.source = newSource; state.tasks.unshift(obj); }
     save(); closeModal(); render();
