@@ -38,6 +38,18 @@ function matchCat(fragment, list){
   return null;
 }
 
+
+/* Normalize free-text status onto the board's canonical ids:
+   "in progress" / "inprogress" / "in_progress" / "doing" -> inprogress
+   "done" / "completed" / "complete" -> done
+   "todo" / "to do" (and anything unrecognized) -> todo */
+function normStatus(v){
+  const t = String(v == null ? "" : v).trim().toLowerCase().replace(/[\s_\-]+/g, "");
+  if(t === "inprogress" || t === "doing") return "inprogress";
+  if(t === "done" || t === "completed" || t === "complete") return "done";
+  return "todo";
+}
+
 export default async function handler(req, res){
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -56,7 +68,7 @@ export default async function handler(req, res){
   if(!title) return res.status(400).json({error:"title is required"});
 
   const source = ["manual","voice","whatsapp"].indexOf(b.source) > -1 ? b.source : "whatsapp";
-  const status = ["todo","inprogress","done"].indexOf(b.status) > -1 ? b.status : "todo";
+  const status = normStatus(b.status);
   const priority = ["low","med","high"].indexOf(b.priority) > -1 ? b.priority : "med";
   let due = null;
   if(b.due){
