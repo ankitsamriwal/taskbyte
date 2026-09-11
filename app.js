@@ -485,7 +485,7 @@ const VOICE_FIELDS = [
     {re:/\bon\s+(\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)[a-z]*(?:\s+\d{4})?)/, useParse:true},
     {re:/\bon\s+((?:january|february|march|april|may|june|july|august|september|october|november|december)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?)/, useParse:true}
   ]},
-  { key:"owner", display:"Owner", labels:["owner","assigned to","assign to","assigned"], fromList:"owners", implicit:true, example:"owner {list}" },
+  { key:"owner", display:"Owner", labels:["owned by","owner","assigned to","assign to","assigned"], fromList:"owners", implicit:true, example:"owner {list}" },
   { key:"customer", display:"Customer", labels:["customer","account","for"], fromList:"customers", implicit:true, example:"customer {list}" },
   { key:"type", display:"Type", labels:["type","category"], fromList:"types", implicit:true, example:"type {list}" },
   { key:"priority", display:"Priority", labels:[], example:"high priority · urgent · low priority", patterns:[
@@ -596,18 +596,26 @@ function parseVoice(raw){
             if(nm){ res[f.key+"New"] = nm; eat(m.index, capStart + m[1].length); }
           }
         } else if(f.parse){
-          /* walk the capture back word by word until the phrase resolves ("due tomorrow high" -> "tomorrow") */
-          let frag = m[1], used = null;
-          while(frag && used==null){
-            used = f.parse(frag);
-            if(used==null){
-              const cut = frag.lastIndexOf(" ");
-              frag = cut>0 ? frag.slice(0,cut) : "";
+          /* walk each candidate capture back word by word until the phrase
+             resolves ("due tomorrow high" -> "tomorrow"); if a label match
+             fails entirely (e.g. the "by" inside "owned by Ankit"), keep
+             scanning for the next label occurrence instead of giving up */
+          const g = new RegExp(capRe.source, "g");
+          let mm;
+          while((mm = g.exec(t)) && res[f.key]==null){
+            let frag = mm[1], used = null;
+            while(frag && used==null){
+              used = f.parse(frag);
+              if(used==null){
+                const cut = frag.lastIndexOf(" ");
+                frag = cut>0 ? frag.slice(0,cut) : "";
+              }
             }
-          }
-          if(used!=null){
-            res[f.key] = used;
-            eat(m.index, capStart + frag.length);
+            if(used!=null){
+              const cs = mm.index + mm[0].length - mm[1].length;
+              res[f.key] = used;
+              eat(mm.index, cs + frag.length);
+            }
           }
         } else {
           res[f.key] = m[1].trim();
