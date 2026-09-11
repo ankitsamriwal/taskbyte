@@ -128,6 +128,7 @@ function renderStats(){
 /* ---------- board ---------- */
 function taskCard(t){
   const due = fmtDue(t.due);
+  if(t.status==="done"&&due) due.cls="";
   const s = stDef(t.status);
   return '<div class="tcard '+(t.status==="done"?"done":"")+'" draggable="true" data-id="'+t.id+'">'+
     '<div class="tcard-top"><span class="drag-handle"><svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor"><circle cx="3" cy="3" r="1.6"/><circle cx="9" cy="3" r="1.6"/><circle cx="3" cy="8" r="1.6"/><circle cx="9" cy="8" r="1.6"/><circle cx="3" cy="13" r="1.6"/><circle cx="9" cy="13" r="1.6"/></svg></span>'+
@@ -230,6 +231,7 @@ function groupView(kind){
       const shown = items.slice().sort((a,b)=>(a.status==="done")-(b.status==="done")||((a.due||"9999")<(b.due||"9999")?-1:1)).slice(0,5);
       shown.forEach(t=>{
         const due = fmtDue(t.due);
+        if(t.status==="done"&&due) due.cls="";
         html += '<div class="gtask'+(t.status==="done"?" done":"")+'" data-id="'+t.id+'" style="cursor:pointer">'+
           '<span class="status-dot" style="background:'+stDef(t.status).color+'"></span>'+
           '<span class="gtask-title">'+esc(t.title)+'</span>'+
