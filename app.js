@@ -491,6 +491,9 @@ const VOICE_FIELDS = [
   { key:"priority", display:"Priority", labels:[], example:"high priority · urgent · low priority", patterns:[
     {re:/\b(urgent|asap)\b/, value:"high"},
     {re:/\b(?:high|highest)\s+priority\b/, value:"high"},
+    {re:/\bpriority\s+(?:high|highest)\b/, value:"high"},
+    {re:/\bpriority\s+(?:medium|med|normal)\b/, value:"med"},
+    {re:/\bpriority\s+low\b/, value:"low"},
     {re:/\bmedium\s+priority\b/, value:"med"},
     {re:/\blow\s+priority\b/, value:"low"}
   ]},
@@ -507,6 +510,7 @@ const MONTHS = {january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:
 
 function parseDuePhrase(p){
   p = p.trim().toLowerCase().replace(/\s+/g," ");
+  p = p.replace(/^(?:(?:due\s+)?date\s+(?:is\s+)?|on\s+|the\s+|by\s+)/,"");
   const iso = n => { const d = todayStart(); d.setDate(d.getDate()+n); return dISO(d); };
   if(p==="today"||p==="tonight"||p==="end of day"||p==="eod") return iso(0);
   if(p==="tomorrow") return iso(1);
