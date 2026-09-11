@@ -483,7 +483,8 @@ const VOICE_FIELDS = [
     {re:/\bon\s+(the\s+\d{1,2}(?:st|nd|rd|th)?)/, useParse:true},
     {re:/\bon\s+((?:next\s+|this\s+)?(?:sun|mon|tue|wed|thu|fri|sat)[a-z]*)\b/, useParse:true},
     {re:/\bon\s+(\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)[a-z]*(?:\s+\d{4})?)/, useParse:true},
-    {re:/\bon\s+((?:january|february|march|april|may|june|july|august|september|october|november|december)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?)/, useParse:true}
+    {re:/\bon\s+((?:january|february|march|april|may|june|july|august|september|october|november|december)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?)/, useParse:true},
+    {re:/\b(tomorrow|today|tonight|next week|next month)\b/, useParse:true}
   ]},
   { key:"owner", display:"Owner", labels:["owned by","owner","assigned to","assign to","assigned"], fromList:"owners", implicit:true, example:"owner {list}" },
   { key:"customer", display:"Customer", labels:["customer","account","for"], fromList:"customers", implicit:true, example:"customer {list}" },
@@ -495,7 +496,10 @@ const VOICE_FIELDS = [
     {re:/\bpriority\s+(?:medium|med|normal)\b/, value:"med"},
     {re:/\bpriority\s+low\b/, value:"low"},
     {re:/\bmedium\s+priority\b/, value:"med"},
-    {re:/\blow\s+priority\b/, value:"low"}
+    {re:/\blow\s+priority\b/, value:"low"},
+    {re:/\bmedium\b/, value:"med"},
+    {re:/\bhigh\b/, value:"high"},
+    {re:/\blow\b/, value:"low"}
   ]},
   { key:"status", display:"Status", labels:[], example:"in progress · mark it done", patterns:[
     {re:/\bstatus\s+in\s+progress\b/, value:"inprogress"},
@@ -564,8 +568,15 @@ function matchCategory(fragment, list){
 
 function parseVoice(raw){
   const res = {heard:raw};
-  let t = " " + raw.toLowerCase().replace(/[.,!?;:]+/g," ").replace(/\s+/g," ");
-  const eat = (start,end) => { t = t.slice(0,start) + " ".repeat(end-start) + t.slice(end); };
+  /* tOrig mirrors t with the original casing, same indices - the unknown-name
+     detection below needs to see which words he capitalized mid-sentence */
+  let tOrig = " " + raw.replace(/[.,!?;:]+/g," ").replace(/\s+/g," ");
+  let t = tOrig.toLowerCase();
+  const eat = (start,end) => {
+    const blank = " ".repeat(end-start);
+    t = t.slice(0,start) + blank + t.slice(end);
+    tOrig = tOrig.slice(0,start) + blank + tOrig.slice(end);
+  };
 
   VOICE_FIELDS.forEach(f=>{
     /* explicit labelled capture: "owner Sara", "due tomorrow", "note check the annex" */
@@ -639,17 +650,69 @@ function parseVoice(raw){
         break;
       }
     }
-    /* implicit category mention ("...acme trading...") - sets the field, words stay in the title */
-    if(res[f.key]==null && f.implicit && f.fromList){
+  });
+
+  /* implicit category mention, no label ("...alpha data..."): a configured
+     name matches anywhere in the utterance. Exact full names run first across
+     every list (longest wins) and are lifted out of the title; a looser
+     first-word pass follows for fields still unset, but loose matches only
+     set the field - title words like the "proposal" in "RSP proposal" stay
+     in the title and can never override an exact match like "development". */
+  const implicitFields = VOICE_FIELDS.filter(f=>f.implicit && f.fromList);
+  [true,false].forEach(exactPass=>{
+    implicitFields.forEach(f=>{
+      if(res[f.key]!=null) return;
       const names = state[f.fromList].map(g=>g.name).sort((a,b)=>b.length-a.length);
       for(const n of names){
         const low = n.toLowerCase();
-        if(t.indexOf(low)>-1){ res[f.key] = n; break; }
-        const first = low.split(/\s+/)[0];
-        if(first.length>=4 && new RegExp("\\b"+first.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\b").test(t)){ res[f.key] = n; break; }
+        const target = exactPass ? low : low.split(/\s+/)[0];
+        if(!exactPass && target.length<4) continue;
+        const re = new RegExp("\\b"+target.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\b");
+        const m = t.match(re);
+        if(!m) continue;
+        res[f.key] = n;
+        if(exactPass) eat(m.index, m.index + m[0].length);
+        break;
       }
-    }
+    });
   });
+
+  /* unknown spoken name, no label: a word he capitalized mid-sentence that
+     matched nothing is likely a person or company missing from his lists -
+     offer it inline as "(new)" instead of leaving it stranded in the title.
+     The name grows through following capitalized words, and through a
+     trailing lowercase word only when it closes out the leftover text
+     ("Alpha data"). One offer per utterance; customer first, then owner. */
+  if(res.owner==null || res.customer==null){
+    const STOP = new Set(["i","me","my","a","an","the","and","or","to","of","in","on","at","for","with","by",
+      "monday","tuesday","wednesday","thursday","friday","saturday","sunday",
+      "january","february","march","april","may","june","july","august","september","october","november","december",
+      "today","tomorrow","tonight","urgent","asap","priority","status","high","medium","med","low","done","complete","completed","task"]);
+    const firstWordAt = t.search(/\S/);
+    const tokRe = /\S+/g; let tm;
+    while((tm = tokRe.exec(t))){
+      const w = tm[0], ow = tOrig.slice(tm.index, tm.index + w.length);
+      if(tm.index <= firstWordAt) continue;   /* sentence-initial capital is just sentence case */
+      if(!/^[A-Z]/.test(ow) || STOP.has(w) || w.length<2) continue;
+      let end = tm.index + w.length, lastGoodEnd = end;
+      const gapRe = /(\s+)(\S+)/g; gapRe.lastIndex = end; let rm;
+      while((rm = gapRe.exec(t)) && rm.index === end){
+        const w2 = rm[2], ow2 = tOrig.slice(rm.index + rm[1].length, rm.index + rm[0].length);
+        if(STOP.has(w2) || /\d/.test(w2)) break;
+        end = rm.index + rm[0].length;
+        if(/^[A-Z]/.test(ow2) || !/\S/.test(t.slice(end))) lastGoodEnd = end;
+        else break;   /* lowercase word with more text after it - not part of the name */
+      }
+      const nm = tOrig.slice(tm.index, lastGoodEnd).trim().replace(/\s+/g," ")
+        .replace(/\b\w/g, ch=>ch.toUpperCase());
+      if(nm.length>=2){
+        const key = res.customer==null ? "customer" : "owner";
+        res[key+"New"] = nm;
+        eat(tm.index, lastGoodEnd);
+      }
+      break;
+    }
+  }
 
   /* title = what is left after the field clauses are lifted out */
   let title = t.replace(/\s+/g," ").trim();
@@ -671,7 +734,7 @@ function voiceHintsHTML(){
     return '<div class="vh-row"><span class="vh-name">'+esc(f.display||f.key)+'</span><span class="vh-ex">'+esc(ex)+'</span></div>';
   }).join("");
   const o = state.owners[0]?state.owners[0].name:"Sara", c = state.customers[0]?state.customers[0].name:"Acme";
-  return '<div class="vh-lead">Say the task name, then any of these, in any order:</div>'+rows+
+  return '<div class="vh-lead">Say the task name, then any of these, in any order - names, dates and priorities are picked up even without the labels:</div>'+rows+
     '<div class="vh-test"><button type="button" class="vh-testbtn" id="vhSelfTest">Run mic self-test</button><span class="vh-testnote">Mic acting up? This checks the fix on your phone - no mic needed.</span></div>'+
     '<div class="vh-full">e.g. “Review the proposal owner '+esc(o)+' customer '+esc(c)+' due Friday high priority”</div>';
 }
@@ -788,6 +851,7 @@ function stopVoice(commit){
 window.__tbVoiceTest = text => { const p = parseVoice(text); p.source = "voice"; openTaskModal(null, p); };
 window.__tbVoiceSelfTest = runVoiceSelfTest;
 window.__tbVoiceBank = voiceBank;
+window.__tbParse = parseVoice;
 
 /* On-phone self-test: runs the REAL capture pipeline (banking, dedupe,
    auto-restart) against a mock engine that mimics Android's worst case:
