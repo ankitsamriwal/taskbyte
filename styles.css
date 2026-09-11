@@ -218,3 +218,8 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .vh-name{flex:0 0 64px;font-weight:700;color:var(--ink,#17181c)}
 .vh-ex{color:var(--muted,#8a8578)}
 .vh-full{margin-top:10px;padding-top:10px;border-top:1px solid var(--line,#e6e3dc);color:var(--ink,#17181c);font-style:italic}
+/* source marker on task cards */
+.foot-left{display:inline-flex;align-items:center;gap:8px;min-width:0}
+.src-tag{display:inline-flex;align-items:center;gap:3px;font-size:9.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#7C3AED}
+.src-tag svg{flex:none}
+.src-tag.wa{color:#0E9F6E}

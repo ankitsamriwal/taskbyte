@@ -40,7 +40,7 @@ function seed(){
   const owners = ["Ankit","Priya","Rahul","Sara"].map((n,i)=>({name:n,color:PALETTE[i]}));
   const customers = ["Acme Trading","Gulf Retail Group","Delta Bank","Orbit Media","NoonCart"].map((n,i)=>({name:n,color:PALETTE[i+4]}));
   const types = ["Development","Proposal Submission","Demo","Meeting"].map((n,i)=>({name:n,color:PALETTE[i+1]}));
-  const T = (title,owner,customer,type,status,due,prio,notes)=>({id:uid(),title,owner,customer,type,status,due,priority:prio,notes:notes||"",createdAt:Date.now(),updatedAt:Date.now()});
+  const T = (title,owner,customer,type,status,due,prio,notes)=>({id:uid(),title,owner,customer,type,status,due,priority:prio,notes:notes||"",source:"manual",createdAt:Date.now(),updatedAt:Date.now()});
   const tasks = [
     T("RFP response - Delta Bank core banking","Ankit","Delta Bank","Proposal Submission","inprogress",rel(2),"high","Commercial annex pending from finance."),
     T("Build pipeline health dashboard","Rahul","Acme Trading","Development","inprogress",rel(4),"med",""),
@@ -69,10 +69,107 @@ function seed(){
   };
 }
 
+/* ---------- shared backend (Supabase) ----------
+   Tasks live in the tasks table, categories/settings in kv. localStorage is a
+   cache for instant paint; the app pulls remote state on boot and after any
+   remote change (realtime), and pushes every local save. */
+const SUPA_URL = "https://ikefglscwurufqkwjkbd.supabase.co";
+const SUPA_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlrZWZnbHNjd3VydWZxa3dqa2JkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkxMjY5ODQsImV4cCI6MjEwNDcwMjk4NH0.Sws1BizHZlEo1olJK_9DOp5xU9so2twXml9i0XM-mtk";
+
 let state;
 try{ state = JSON.parse(localStorage.getItem(LS_KEY)) || seed(); }catch(e){ state = seed(); }
 if(!state.settings || !state.settings.notifications) state = seed();
-const save = () => localStorage.setItem(LS_KEY, JSON.stringify(state));
+state.tasks.forEach(t=>{ if(!t.source) t.source = "manual"; });
+
+let sb = null, remoteReady = false, pushTimer = null, pullTimer = null, lastLocalEdit = 0, pullPending = false;
+let pendingDeletes = [];
+
+function save(){
+  lastLocalEdit = Date.now();
+  localStorage.setItem(LS_KEY, JSON.stringify(state));
+  schedulePush();
+}
+function schedulePush(){
+  if(!remoteReady) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushState, 700);
+}
+function schedulePull(){
+  if(!remoteReady) return;
+  clearTimeout(pullTimer);
+  pullTimer = setTimeout(()=>{
+    if(Date.now() - lastLocalEdit < 2500){ schedulePull(); return; } /* local edit in flight - wait it out */
+    const modalOpen = !$("#taskModalWrap").classList.contains("hidden");
+    if(modalOpen){ pullPending = true; return; }
+    pullState(false);
+  }, 1200);
+}
+function taskToRow(t){
+  return {id:t.id, title:t.title, owner:t.owner, customer:t.customer, type:t.type, status:t.status,
+    due:t.due||null, priority:t.priority, notes:t.notes||"", source:t.source||"manual",
+    created_at:t.createdAt, updated_at:t.updatedAt};
+}
+function rowToTask(r){
+  return {id:r.id, title:r.title, owner:r.owner, customer:r.customer, type:r.type, status:r.status,
+    due:r.due, priority:r.priority, notes:r.notes||"", source:r.source||"manual",
+    createdAt:r.created_at, updatedAt:r.updated_at};
+}
+async function pushState(){
+  if(!sb || !remoteReady) return;
+  try{
+    const rows = state.tasks.map(taskToRow);
+    if(rows.length) await sb.from("tasks").upsert(rows);
+    if(pendingDeletes.length){
+      const ids = pendingDeletes.splice(0);
+      await sb.from("tasks").delete().in("id", ids);
+    }
+    const now = Date.now();
+    await sb.from("kv").upsert([
+      {key:"owners", value:state.owners, updated_at:now},
+      {key:"customers", value:state.customers, updated_at:now},
+      {key:"types", value:state.types, updated_at:now},
+      {key:"settings", value:state.settings, updated_at:now},
+      {key:"notifLog", value:state.notifLog, updated_at:now},
+      {key:"notifSeen", value:state.notifSeen, updated_at:now}
+    ]);
+  }catch(e){ /* offline or transient - localStorage still holds the truth locally */ }
+}
+async function pullState(initial){
+  try{
+    const res = await Promise.all([ sb.from("tasks").select("*"), sb.from("kv").select("*") ]);
+    if(res[0].error || res[1].error) return;
+    const taskRows = res[0].data || [], kvRows = res[1].data || [];
+    if(initial && !taskRows.length && !kvRows.length){ pushState(); return; } /* first run anywhere: migrate local state up */
+    state.tasks = taskRows.map(rowToTask).sort((a,b)=> (b.createdAt||0)-(a.createdAt||0));
+    const kv = {}; kvRows.forEach(r=>{ kv[r.key]=r.value; });
+    if(Array.isArray(kv.owners) && kv.owners.length) state.owners = kv.owners;
+    if(Array.isArray(kv.customers) && kv.customers.length) state.customers = kv.customers;
+    if(Array.isArray(kv.types) && kv.types.length) state.types = kv.types;
+    if(kv.settings && kv.settings.notifications) state.settings = kv.settings;
+    if(Array.isArray(kv.notifLog)) state.notifLog = kv.notifLog;
+    if(typeof kv.notifSeen === "number") state.notifSeen = kv.notifSeen;
+    localStorage.setItem(LS_KEY, JSON.stringify(state));
+    render();
+    if(!$("#settingsSheet").classList.contains("hidden")) renderSettings();
+    if(!$("#notifSheet").classList.contains("hidden")) renderNotifs();
+  }catch(e){}
+}
+function sbInit(){
+  if(!window.supabase){ toast("Shared backend library failed to load - working offline in this browser"); return; }
+  try{
+    sb = window.supabase.createClient(SUPA_URL, SUPA_ANON);
+  }catch(e){ return; }
+  sb.from("kv").select("key").limit(1).then(({error})=>{
+    if(error){ toast("Shared backend not reachable - changes stay on this device"); return; }
+    remoteReady = true;
+    pullState(true).then(()=>{
+      sb.channel("taskbyte-sync")
+        .on("postgres_changes", {event:"*", schema:"public", table:"tasks"}, schedulePull)
+        .on("postgres_changes", {event:"*", schema:"public", table:"kv"}, schedulePull)
+        .subscribe();
+    });
+  });
+}
 
 let view = "board";
 let editingId = null;
@@ -130,6 +227,11 @@ function taskCard(t){
   const due = fmtDue(t.due);
   if(t.status==="done"&&due){ due.cls=""; due.text=due.text.replace(" · overdue",""); }
   const s = stDef(t.status);
+  const srcTag = t.source==="voice"
+    ? '<span class="src-tag" title="Added by voice"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>voice</span>'
+    : t.source==="whatsapp"
+    ? '<span class="src-tag wa" title="Added from WhatsApp"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>whatsapp</span>'
+    : "";
   return '<div class="tcard '+(t.status==="done"?"done":"")+'" draggable="true" data-id="'+t.id+'">'+
     '<div class="tcard-top"><span class="drag-handle"><svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor"><circle cx="3" cy="3" r="1.6"/><circle cx="9" cy="3" r="1.6"/><circle cx="3" cy="8" r="1.6"/><circle cx="9" cy="8" r="1.6"/><circle cx="3" cy="13" r="1.6"/><circle cx="9" cy="13" r="1.6"/></svg></span>'+
     '<div class="tcard-title">'+esc(t.title)+'</div></div>'+
@@ -139,7 +241,7 @@ function taskCard(t){
       '<span class="prio '+t.priority+'">'+t.priority.toUpperCase()+'</span>'+
     '</div>'+
     '<div class="tcard-foot">'+
-      (due?'<span class="due '+due.cls+'"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>'+due.text+'</span>':"<span></span>")+
+      '<span class="foot-left">'+(due?'<span class="due '+due.cls+'"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>'+due.text+'</span>':"")+srcTag+'</span>'+
       '<span class="avatar" style="background:'+ownerColor(t.owner)+'" title="'+esc(t.owner)+'">'+initials(t.owner)+'</span>'+
     '</div></div>';
 }
@@ -342,6 +444,7 @@ function bindSettings(){
   });
   $("#resetBtn").addEventListener("click", ()=>{
     if(!confirm("Reset everything back to the demo dataset?")) return;
+    pendingDeletes.push.apply(pendingDeletes, state.tasks.map(t=>t.id));
     state = seed(); save(); render(); renderSettings(); toast("Demo data restored");
   });
 }
@@ -600,7 +703,7 @@ function stopVoice(commit){
   if(recog){ try{ recog.onend=null; recog.stop(); }catch(e){} recog=null; }
   const text = recogText.trim();
   recogText = "";
-  if(commit && text) openTaskModal(null, parseVoice(text));
+  if(commit && text){ const p = parseVoice(text); p.source = "voice"; openTaskModal(null, p); }
   else if(commit) toast("Didn't catch anything - tap the mic and try again");
 }
 /* test hook: simulate a dictated transcript end to end (parse + prefilled modal) */
@@ -610,6 +713,7 @@ window.__tbVoiceTest = text => { openTaskModal(null, parseVoice(text)); };
 function opts(list, sel){ return list.map(g=>'<option '+(g.name===sel?"selected":"")+'>'+esc(g.name)+'</option>').join(""); }
 function openTaskModal(id, prefill){
   editingId = id || null;
+  var newSource = (!id && prefill && prefill.source) ? prefill.source : "manual";
   const blank = {title:"",owner:state.owners[0].name,customer:state.customers[0].name,type:state.types[0].name,status:"todo",due:dISO(todayStart()),priority:"med",notes:""};
   const t = id ? state.tasks.find(x=>x.id===id) : Object.assign(blank, prefill||{});
   if(t.owner && !state.owners.some(o=>o.name===t.owner)) t.owner = blank.owner;
@@ -642,6 +746,7 @@ function openTaskModal(id, prefill){
     $("#vhBtn").addEventListener("click", ()=>p.classList.toggle("hidden")); }
   $("#taskCancel").addEventListener("click", closeModal);
   if(id) $("#taskDelete").addEventListener("click", ()=>{
+    pendingDeletes.push(id);
     state.tasks = state.tasks.filter(x=>x.id!==id); save(); closeModal(); render(); toast("Task deleted");
   });
   $("#taskSave").addEventListener("click", ()=>{
@@ -653,7 +758,7 @@ function openTaskModal(id, prefill){
     obj.title=title; obj.owner=$("#fOwner").value; obj.customer=$("#fCustomer").value;
     obj.type=$("#fType").value; obj.due=$("#fDue").value||null; obj.priority=prio; obj.status=stat;
     obj.notes=$("#fNotes").value.trim(); obj.updatedAt=Date.now();
-    if(wasNew) state.tasks.unshift(obj);
+    if(wasNew){ obj.source = newSource; state.tasks.unshift(obj); }
     save(); closeModal(); render();
     if(wasNew) queueNotification("newTask", 'New task: "'+obj.title+'" - '+obj.owner+' · '+obj.customer+' · due '+(obj.due?fmtDue(obj.due).text:"no date"));
     else if(oldStatus!==stat) queueNotification("statusChange", '"'+obj.title+'" moved from '+stDef(oldStatus).label+' to '+stDef(stat).label+' ('+obj.owner+')');
@@ -662,7 +767,8 @@ function openTaskModal(id, prefill){
   setTimeout(()=>$("#fTitle").focus(),80);
 }
 function showModal(html){ $("#taskModal").innerHTML = html; $("#taskModalWrap").classList.remove("hidden"); }
-function closeModal(){ $("#taskModalWrap").classList.add("hidden"); editingId=null; }
+function closeModal(){ $("#taskModalWrap").classList.add("hidden"); editingId=null;
+  if(pullPending){ pullPending = false; pullState(false); } }
 
 /* ---------- notif sheet ---------- */
 function renderNotifs(){
@@ -706,6 +812,7 @@ function boot(){
   $("#taskModalWrap").addEventListener("click", e=>{ if(e.target===e.currentTarget) closeModal(); });
   document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closeModal(); closeSheets(); } });
   render();
+  sbInit();
 }
 boot();
 })();
