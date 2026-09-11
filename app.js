@@ -367,12 +367,242 @@ function openDigestPreview(){
   $("#modalClose").addEventListener("click", closeModal);
 }
 
+
+/* ---------- voice task capture ----------
+   Parsing is driven by VOICE_FIELDS, not a hardcoded field list: each entry
+   declares the spoken labels for a task field and how to resolve its value
+   (match a configured category list, or run a parser). When a new field is
+   added to the task model later, add one entry here and the voice flow
+   picks it up - the capture regexes below are built from these labels. */
+const VOICE_FIELDS = [
+  { key:"notes", labels:["note","notes"], capture:"rest" },
+  { key:"due", labels:["due by","due","deadline","by"], parse:parseDuePhrase, patterns:[
+    {re:/\bon\s+(the\s+\d{1,2}(?:st|nd|rd|th)?)/, useParse:true},
+    {re:/\bon\s+((?:next\s+|this\s+)?(?:sun|mon|tue|wed|thu|fri|sat)[a-z]*)\b/, useParse:true},
+    {re:/\bon\s+(\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)[a-z]*(?:\s+\d{4})?)/, useParse:true},
+    {re:/\bon\s+((?:january|february|march|april|may|june|july|august|september|october|november|december)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?)/, useParse:true}
+  ]},
+  { key:"owner", labels:["owner","assigned to","assign to","assigned"], fromList:"owners", implicit:true },
+  { key:"customer", labels:["customer","account","for"], fromList:"customers", implicit:true },
+  { key:"type", labels:["type","category"], fromList:"types", implicit:true },
+  { key:"priority", labels:[], patterns:[
+    {re:/\b(urgent|asap)\b/, value:"high"},
+    {re:/\b(?:high|highest)\s+priority\b/, value:"high"},
+    {re:/\bmedium\s+priority\b/, value:"med"},
+    {re:/\blow\s+priority\b/, value:"low"}
+  ]},
+  { key:"status", labels:[], patterns:[
+    {re:/\bstatus\s+in\s+progress\b/, value:"inprogress"},
+    {re:/\bin\s+progress\b/, value:"inprogress"},
+    {re:/\b(?:status|mark(?:\s+(?:it|as))?)\s+(?:done|complete|completed)\b/, value:"done"}
+  ]}
+];
+const VOICE_ALL_LABELS = VOICE_FIELDS.flatMap(f=>f.labels).sort((a,b)=>b.length-a.length)
+  .map(l=>l.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("|");
+const DAYS = {sunday:0,monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6};
+const MONTHS = {january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:7,september:8,october:9,november:10,december:11};
+
+function parseDuePhrase(p){
+  p = p.trim().toLowerCase().replace(/\s+/g," ");
+  const iso = n => { const d = todayStart(); d.setDate(d.getDate()+n); return dISO(d); };
+  if(p==="today"||p==="tonight"||p==="end of day"||p==="eod") return iso(0);
+  if(p==="tomorrow") return iso(1);
+  if(p==="day after tomorrow"||p==="overmorrow") return iso(2);
+  if(p==="next week"||p==="in a week") return iso(7);
+  if(p==="next month") return iso(30);
+  let m = p.match(/^in (\d+) days?$/); if(m) return iso(+m[1]);
+  m = p.match(/^in (\d+) weeks?$/); if(m) return iso(+m[1]*7);
+  m = p.match(/^(?:on\s+)?(?:this\s+|next\s+)?(sun|mon|tue|wed|thu|fri|sat)[a-z]*$/);
+  if(m){
+    const full = Object.keys(DAYS).find(d=>d.indexOf(m[1])===0);
+    const target = DAYS[full], dow = todayStart().getDay();
+    let diff = (target - dow + 7) % 7;
+    if(/\bthis\b/.test(p)) return iso(diff);
+    if(diff===0) diff = 7;
+    if(/\bnext\b/.test(p)) diff += 7;
+    return iso(diff);
+  }
+  const monthNames = Object.keys(MONTHS).join("|");
+  m = p.match(new RegExp("^(?:on )?(?:the )?(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?("+monthNames+")(?:\\s+(\\d{4}))?$"));
+  let day, mon, yr;
+  if(m){ day=+m[1]; mon=MONTHS[m[2]]; yr=m[3]?+m[3]:null; }
+  else {
+    m = p.match(new RegExp("^(?:on )?("+monthNames+")\\s+(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?$"));
+    if(m){ mon=MONTHS[m[1]]; day=+m[2]; yr=m[3]?+m[3]:null; }
+  }
+  if(m){
+    let d = new Date(todayStart().getFullYear(), mon, day);
+    if(yr) d.setFullYear(yr);
+    if(!yr && d < todayStart()) d.setFullYear(d.getFullYear()+1);
+    return dISO(d);
+  }
+  m = p.match(/^(?:on )?the (\d{1,2})(?:st|nd|rd|th)?$/);
+  if(m){
+    let d = new Date(todayStart().getFullYear(), todayStart().getMonth(), +m[1]);
+    if(d < todayStart()) d.setMonth(d.getMonth()+1);
+    return dISO(d);
+  }
+  return null;
+}
+
+function matchCategory(fragment, list){
+  fragment = fragment.trim().toLowerCase();
+  if(!fragment) return null;
+  let hit = list.find(g=>g.name.toLowerCase()===fragment); if(hit) return hit.name;
+  hit = list.find(g=>g.name.toLowerCase().indexOf(fragment)===0); if(hit) return hit.name;
+  hit = list.find(g=>g.name.toLowerCase().split(/\s+/)[0]===fragment); if(hit) return hit.name;
+  hit = list.find(g=>g.name.toLowerCase().indexOf(fragment)>-1); if(hit) return hit.name;
+  return null;
+}
+
+function parseVoice(raw){
+  const res = {heard:raw};
+  let t = " " + raw.toLowerCase().replace(/[.,!?;:]+/g," ").replace(/\s+/g," ");
+  const eat = (start,end) => { t = t.slice(0,start) + " ".repeat(end-start) + t.slice(end); };
+
+  VOICE_FIELDS.forEach(f=>{
+    /* explicit labelled capture: "owner Sara", "due tomorrow", "note check the annex" */
+    if(f.labels.length){
+      const labelRe = f.labels.map(l=>l.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("|");
+      const capRe = f.capture==="rest"
+        ? new RegExp("\\b(?:"+labelRe+")\\b\\s+(.+)\\s*$")
+        : new RegExp("\\b(?:"+labelRe+")\\b\\s+(.+?)(?=\\s+(?:"+VOICE_ALL_LABELS+")\\b|\\s*$)");
+      const m = t.match(capRe);
+      if(m){
+        const capStart = m.index + m[0].length - m[1].length;
+        if(f.capture==="rest"){
+          res[f.key] = m[1].trim();
+          eat(m.index, m.index + m[0].length);
+        } else if(f.fromList){
+          let frag = m[1], name = null;
+          while(frag && name==null){
+            name = matchCategory(frag, state[f.fromList]);
+            if(name==null){
+              const cut = frag.lastIndexOf(" ");
+              frag = cut>0 ? frag.slice(0,cut) : "";
+            }
+          }
+          if(name!=null){ res[f.key] = name; eat(m.index, capStart + frag.length); }
+        } else if(f.parse){
+          /* walk the capture back word by word until the phrase resolves ("due tomorrow high" -> "tomorrow") */
+          let frag = m[1], used = null;
+          while(frag && used==null){
+            used = f.parse(frag);
+            if(used==null){
+              const cut = frag.lastIndexOf(" ");
+              frag = cut>0 ? frag.slice(0,cut) : "";
+            }
+          }
+          if(used!=null){
+            res[f.key] = used;
+            eat(m.index, capStart + frag.length);
+          }
+        } else {
+          res[f.key] = m[1].trim();
+          eat(m.index, m.index + m[0].length);
+        }
+      }
+    }
+    /* standalone patterns ("urgent", "in progress", "on the 20th") */
+    if(res[f.key]==null && f.patterns){
+      for(const pat of f.patterns){
+        const pm = t.match(pat.re);
+        if(!pm) continue;
+        if(pat.useParse && f.parse){
+          const v = f.parse(pm[1]);
+          if(v==null) continue;
+          res[f.key] = v;
+        } else {
+          res[f.key] = pat.value;
+        }
+        eat(pm.index, pm.index + pm[0].length);
+        break;
+      }
+    }
+    /* implicit category mention ("...acme trading...") - sets the field, words stay in the title */
+    if(res[f.key]==null && f.implicit && f.fromList){
+      const names = state[f.fromList].map(g=>g.name).sort((a,b)=>b.length-a.length);
+      for(const n of names){
+        const low = n.toLowerCase();
+        if(t.indexOf(low)>-1){ res[f.key] = n; break; }
+        const first = low.split(/\s+/)[0];
+        if(first.length>=4 && new RegExp("\\b"+first.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\b").test(t)){ res[f.key] = n; break; }
+      }
+    }
+  });
+
+  /* title = what is left after the field clauses are lifted out */
+  let title = t.replace(/\s+/g," ").trim();
+  title = title.replace(/^(add|create|new)\s+(a\s+)?(task\s+)?/i,"").replace(/^task\s+/i,"").replace(/^remind me to\s+/i,"").replace(/^on\s+/i,"").trim();
+  if(title) title = title.charAt(0).toUpperCase() + title.slice(1);
+  res.title = title || raw.charAt(0).toUpperCase()+raw.slice(1);
+  return res;
+}
+
+let recog = null, recogText = "", recogActive = false;
+function voiceSupported(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
+function startVoice(){
+  if(recogActive){ stopVoice(true); return; }
+  if(!voiceSupported()){
+    toast("Voice input needs Chrome or Edge on this device - add the task by typing instead");
+    return;
+  }
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  recog = new SR();
+  recog.lang = "en-US";
+  recog.interimResults = true;
+  recog.continuous = true;
+  recogText = "";
+  recog.onresult = e=>{
+    let final = "", interim = "";
+    for(let i=0;i<e.results.length;i++){
+      if(e.results[i].isFinal) final += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    recogText = final || recogText;
+    $("#voiceText").textContent = (final + " " + interim).trim() || "Listening…";
+  };
+  recog.onerror = e=>{
+    const err = e.error;
+    stopVoice(false);
+    if(err==="not-allowed"||err==="service-not-allowed") toast("Microphone access is blocked - allow it for this site and try again");
+    else if(err==="no-speech") toast("Didn't catch anything - tap the mic and try again");
+    else if(err!=="aborted") toast("Voice input stopped - try again");
+  };
+  recog.onend = ()=>{ if(recogActive) stopVoice(true); };
+  try{
+    recog.start();
+    recogActive = true;
+    $("#voiceText").textContent = "Listening… describe the task: owner, customer, type, due date, priority.";
+    $("#voiceBar").classList.remove("hidden");
+    $("#micBtn").classList.add("listening");
+  }catch(e){ toast("Voice input is not available right now"); }
+}
+function stopVoice(commit){
+  recogActive = false;
+  $("#voiceBar").classList.add("hidden");
+  $("#micBtn").classList.remove("listening");
+  if(recog){ try{ recog.onend=null; recog.stop(); }catch(e){} recog=null; }
+  const text = recogText.trim();
+  recogText = "";
+  if(commit && text) openTaskModal(null, parseVoice(text));
+  else if(commit) toast("Didn't catch anything - tap the mic and try again");
+}
+/* test hook: simulate a dictated transcript end to end (parse + prefilled modal) */
+window.__tbVoiceTest = text => { openTaskModal(null, parseVoice(text)); };
+
 /* ---------- task modal ---------- */
 function opts(list, sel){ return list.map(g=>'<option '+(g.name===sel?"selected":"")+'>'+esc(g.name)+'</option>').join(""); }
-function openTaskModal(id){
+function openTaskModal(id, prefill){
   editingId = id || null;
-  const t = id ? state.tasks.find(x=>x.id===id) : {title:"",owner:state.owners[0].name,customer:state.customers[0].name,type:state.types[0].name,status:"todo",due:dISO(todayStart()),priority:"med",notes:""};
-  showModal('<div class="eyebrow">'+(id?"EDIT TASK":"NEW TASK")+'</div><h2>'+(id?"Edit task":"Add a task")+'</h2>'+
+  const blank = {title:"",owner:state.owners[0].name,customer:state.customers[0].name,type:state.types[0].name,status:"todo",due:dISO(todayStart()),priority:"med",notes:""};
+  const t = id ? state.tasks.find(x=>x.id===id) : Object.assign(blank, prefill||{});
+  if(t.owner && !state.owners.some(o=>o.name===t.owner)) t.owner = blank.owner;
+  if(t.customer && !state.customers.some(o=>o.name===t.customer)) t.customer = blank.customer;
+  if(t.type && !state.types.some(o=>o.name===t.type)) t.type = blank.type;
+  const heard = !id && prefill && prefill.heard;
+  showModal('<div class="eyebrow">'+(id?"EDIT TASK":heard?"NEW TASK · FROM VOICE":"NEW TASK")+'</div><h2>'+(id?"Edit task":"Add a task")+'</h2>'+
+    (heard?'<div class="heard"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg><span>Heard: &ldquo;'+esc(prefill.heard)+'&rdquo;</span></div>':'')+
     '<div class="field"><label>Title</label><input class="input" id="fTitle" value="'+esc(t.title)+'" placeholder="What needs doing?"></div>'+
     '<div class="modal mrow">'+
       '<div class="field"><label>Owner</label><select class="input" id="fOwner">'+opts(state.owners,t.owner)+'</select></div>'+
@@ -446,6 +676,8 @@ function boot(){
   $("#heroDate").textContent = new Date().toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"}).toUpperCase();
   $$(".vs-btn").forEach(b=>b.addEventListener("click", ()=>{ view=b.dataset.view; render(); }));
   $("#addTaskBtn").addEventListener("click", ()=>openTaskModal(null));
+  $("#micBtn").addEventListener("click", startVoice);
+  $("#voiceStop").addEventListener("click", ()=>stopVoice(true));
   const openSheet = id=>{ $(id).classList.remove("hidden"); $("#scrim").classList.remove("hidden"); };
   const closeSheets = ()=>{ $$(".sheet").forEach(s=>s.classList.add("hidden")); $("#scrim").classList.add("hidden"); };
   $("#settingsBtn").addEventListener("click", ()=>{ renderSettings(); openSheet("#settingsSheet"); });
