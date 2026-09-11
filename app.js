@@ -693,13 +693,13 @@ function startVoice(){
     recogActive = true;
     $("#voiceText").textContent = "Listening… describe the task: owner, customer, type, due date, priority.";
     $("#voiceBar").classList.remove("hidden");
-    $("#micBtn").classList.add("listening");
+    const _mb=$("#modalMicBtn"); if(_mb) _mb.classList.add("listening");
   }catch(e){ toast("Voice input is not available right now"); }
 }
 function stopVoice(commit){
   recogActive = false;
   $("#voiceBar").classList.add("hidden");
-  $("#micBtn").classList.remove("listening");
+  const _mb2=$("#modalMicBtn"); if(_mb2) _mb2.classList.remove("listening");
   if(recog){ try{ recog.onend=null; recog.stop(); }catch(e){} recog=null; }
   const text = recogText.trim();
   recogText = "";
@@ -721,7 +721,7 @@ function openTaskModal(id, prefill){
   if(t.type && !state.types.some(o=>o.name===t.type)) t.type = blank.type;
   const heard = !id && prefill && prefill.heard;
   showModal('<div class="eyebrow">'+(id?"EDIT TASK":heard?"NEW TASK · FROM VOICE":"NEW TASK")+'</div><h2>'+(id?"Edit task":"Add a task")+'</h2>'+
-    (!id?'<button class="vh-btn" id="vhBtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>What can I say?</button><div class="vh-panel hidden" id="vhPanel"></div>':"")+
+    (!id?'<div class="vh-actions"><button class="vh-mic" id="modalMicBtn" aria-label="Add task by voice"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></button><button class="vh-btn" id="vhBtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>What can I say?</button></div><div class="vh-panel hidden" id="vhPanel"></div>':"")+
     (heard?'<div class="heard"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg><span>Heard: &ldquo;'+esc(prefill.heard)+'&rdquo;</span></div>':'')+
     '<div class="field"><label>Title</label><input class="input" id="fTitle" value="'+esc(t.title)+'" placeholder="What needs doing?"></div>'+
     '<div class="modal mrow">'+
@@ -743,7 +743,8 @@ function openTaskModal(id, prefill){
   $$("#fPrio button").forEach(b=>b.addEventListener("click", ()=>{ prio=b.dataset.p; $$("#fPrio button").forEach(x=>x.classList.toggle("active",x===b)); }));
   $$("#fStatus button").forEach(b=>b.addEventListener("click", ()=>{ stat=b.dataset.s; $$("#fStatus button").forEach(x=>x.classList.toggle("active",x===b)); }));
   if(!id){ const p = $("#vhPanel"); p.innerHTML = voiceHintsHTML();
-    $("#vhBtn").addEventListener("click", ()=>p.classList.toggle("hidden")); }
+    $("#vhBtn").addEventListener("click", ()=>p.classList.toggle("hidden"));
+    $("#modalMicBtn").addEventListener("click", startVoice); }
   $("#taskCancel").addEventListener("click", closeModal);
   if(id) $("#taskDelete").addEventListener("click", ()=>{
     pendingDeletes.push(id);
@@ -800,7 +801,6 @@ function boot(){
   $("#heroDate").textContent = new Date().toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"}).toUpperCase();
   $$(".vs-btn").forEach(b=>b.addEventListener("click", ()=>{ view=b.dataset.view; render(); }));
   $("#addTaskBtn").addEventListener("click", ()=>openTaskModal(null));
-  $("#micBtn").addEventListener("click", startVoice);
   $("#voiceStop").addEventListener("click", ()=>stopVoice(true));
   const openSheet = id=>{ $(id).classList.remove("hidden"); $("#scrim").classList.remove("hidden"); };
   const closeSheets = ()=>{ $$(".sheet").forEach(s=>s.classList.add("hidden")); $("#scrim").classList.add("hidden"); };
