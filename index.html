@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TaskByte - Team Task Tracker</title>
+<meta name="description" content="A clean, modern task tracker: kanban board, owner and customer views, custom categories, and email notification settings.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23FF5A2D'/%3E%3Cpath d='M18 33l10 10 18-22' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><svg viewBox="0 0 64 64" width="22" height="22"><rect width="64" height="64" rx="16" fill="#FF5A2D"/><path d="M18 33l10 10 18-22" stroke="#fff" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <span class="brand-name">TaskByte</span>
+      <span class="draft-pill">DRAFT</span>
+    </div>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="bellBtn" aria-label="Notification log">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        <span class="bell-badge hidden" id="bellBadge">0</span>
+      </button>
+      <button class="icon-btn" id="settingsBtn" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="eyebrow" id="heroDate"></div>
+    <h1 class="hero-title">Your tasks,<br>beautifully on track.</h1>
+  </section>
+
+  <section class="stats" id="statsRow"></section>
+
+  <nav class="viewswitch" id="viewSwitch">
+    <button class="vs-btn active" data-view="board">Board</button>
+    <button class="vs-btn" data-view="owners">By owner</button>
+    <button class="vs-btn" data-view="customers">By customer</button>
+    <button class="vs-btn" data-view="types">By type</button>
+  </nav>
+
+  <main id="main"></main>
+
+  <button class="fab" id="addTaskBtn" aria-label="Add task">
+    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+</div>
+
+<div class="scrim hidden" id="scrim"></div>
+
+<aside class="sheet hidden" id="settingsSheet" aria-label="Settings">
+  <div class="sheet-head">
+    <div>
+      <div class="eyebrow">CONFIGURATION</div>
+      <h2>Settings</h2>
+    </div>
+    <button class="icon-btn" id="settingsClose"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="sheet-body" id="settingsBody"></div>
+</aside>
+
+<aside class="sheet hidden" id="notifSheet" aria-label="Notification log">
+  <div class="sheet-head">
+    <div>
+      <div class="eyebrow">STUB OUTBOX</div>
+      <h2>Notifications</h2>
+    </div>
+    <button class="icon-btn" id="notifClose"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="sheet-body" id="notifBody"></div>
+</aside>
+
+<div class="modal-wrap hidden" id="taskModalWrap">
+  <div class="modal" id="taskModal"></div>
+</div>
+
+<div class="toast-zone" id="toastZone"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
