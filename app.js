@@ -651,7 +651,6 @@ function parseVoice(raw){
   return res;
 }
 
-let recog = null, recogText = "", recogActive = false;
 
 /* voice hint panel: built from VOICE_FIELDS so it stays accurate as fields change */
 function voiceHintsHTML(){
@@ -665,63 +664,168 @@ function voiceHintsHTML(){
   }).join("");
   const o = state.owners[0]?state.owners[0].name:"Sara", c = state.customers[0]?state.customers[0].name:"Acme";
   return '<div class="vh-lead">Say the task name, then any of these, in any order:</div>'+rows+
+    '<div class="vh-test"><button type="button" class="vh-testbtn" id="vhSelfTest">Run mic self-test</button><span class="vh-testnote">Mic acting up? This checks the fix on your phone - no mic needed.</span></div>'+
     '<div class="vh-full">e.g. “Review the proposal owner '+esc(o)+' customer '+esc(c)+' due Friday high priority”</div>';
 }
 function voiceSupported(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
+
+/* Voice capture, built for Android Chrome's real behaviour:
+   - the engine ends the session after a few seconds (silence timeout, or an
+     internal restart) and may re-deliver earlier results on the next session.
+   So:
+   - continuous=false everywhere (continuous is unsupported/erratic on Android);
+     we keep recording by auto-restarting a fresh recognizer on every onend
+     until the user taps stop (manual flag `recogActive`).
+   - interimResults=false: interim hypotheses are never banked or shown, so a
+     re-delivered interim can never stack text. Only final results are used.
+   - banking dedupes by suffix overlap: if the banked text already ends with
+     the start of a new final, only the genuinely new tail is appended; a final
+     that is fully contained in the banked tail is dropped outright. */
+let recog=null, recogActive=false, recogText="", recogRestartTimer=null, recogStartedAt=0, recogFails=0;
+const RECOG_MAX_MS = 120000; /* safety cap: auto-commit after 2 minutes */
+
+function voiceBank(banked, chunk){
+  const b = banked.trim(), c = chunk.trim();
+  if(!c) return b;
+  if(!b) return c;
+  const bl = b.toLowerCase(), cl = c.toLowerCase();
+  if(bl === cl || bl.endsWith(cl)) return b; /* pure re-delivery of what we have */
+  if(bl.startsWith(cl)) return b; /* re-delivery of the start of the utterance (engine restarted and replayed from scratch) */
+  const max = Math.min(bl.length, cl.length);
+  for(let k = max; k > 0; k--){
+    if(bl.endsWith(cl.slice(0, k))){
+      const rest = c.slice(k).trim();
+      return rest ? b + " " + rest : b;
+    }
+  }
+  return b + " " + c;
+}
+
+let SR_OVERRIDE = null; /* self-test installs a mock engine here */
+function makeRecog(){
+  const SR = SR_OVERRIDE || window.SpeechRecognition || window.webkitSpeechRecognition;
+  const r = new SR();
+  r.lang = "en-US";
+  r.interimResults = false;
+  r.continuous = false;
+  r.onresult = e=>{
+    for(let i = (e.resultIndex || 0); i < e.results.length; i++){
+      const res = e.results[i];
+      if(res.isFinal) recogText = voiceBank(recogText, res[0].transcript);
+    }
+    const vt = $("#voiceText");
+    if(vt) vt.textContent = recogText.trim() || "Listening\u2026";
+  };
+  r.onerror = e=>{
+    const err = e.error;
+    if(err === "not-allowed" || err === "service-not-allowed"){
+      stopVoice(false);
+      toast("Microphone access is blocked - allow it for this site and try again");
+    }
+    /* every other error (no-speech, network, audio-capture, aborted) is
+       followed by onend, which restarts the session - nothing to do here */
+  };
+  r.onend = ()=>{
+    recog = null;
+    if(!recogActive) return;
+    if(Date.now() - recogStartedAt > RECOG_MAX_MS){ stopVoice(true); return; }
+    /* brief pause before restarting: some engines refuse an instant restart */
+    recogRestartTimer = setTimeout(()=>{ if(recogActive) startRecogInstance(); }, 250);
+  };
+  return r;
+}
+
+function startRecogInstance(){
+  try{
+    recog = makeRecog();
+    recog.start();
+    recogFails = 0;
+  }catch(e){
+    recog = null;
+    recogFails++;
+    if(recogFails >= 3){ stopVoice(false); toast("Voice input is not available right now"); }
+    else recogRestartTimer = setTimeout(()=>{ if(recogActive) startRecogInstance(); }, 600);
+  }
+}
+
 function startVoice(){
   if(recogActive){ stopVoice(true); return; }
   if(!voiceSupported()){
     toast("Voice input needs Chrome or Edge on this device - add the task by typing instead");
     return;
   }
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recog = new SR();
-  recog.lang = "en-US";
-  recog.interimResults = true;
-  recog.continuous = true;
   recogText = "";
-  recog.onresult = e=>{
-    /* accumulate only final results; interim renders as one replacing hypothesis.
-       Mobile engines re-deliver earlier finals after internal restarts - dedupe
-       against text we already banked so nothing repeats. */
-    let interim = "";
-    for(let i=(e.resultIndex||0);i<e.results.length;i++){
-      const r = e.results[i], txt = r[0].transcript;
-      if(r.isFinal){
-        const clean = txt.trim();
-        if(clean && recogText.toLowerCase().indexOf(clean.toLowerCase())===-1) recogText += clean + " ";
-      } else interim = txt;
-    }
-    $("#voiceText").textContent = (recogText + interim).trim() || "Listening…";
-  };
-  recog.onerror = e=>{
-    const err = e.error;
-    stopVoice(false);
-    if(err==="not-allowed"||err==="service-not-allowed") toast("Microphone access is blocked - allow it for this site and try again");
-    else if(err==="no-speech") toast("Didn't catch anything - tap the mic and try again");
-    else if(err!=="aborted") toast("Voice input stopped - try again");
-  };
-  recog.onend = ()=>{ if(recogActive) stopVoice(true); };
-  try{
-    recog.start();
-    recogActive = true;
-    $("#voiceText").textContent = "Listening… describe the task: owner, customer, type, due date, priority.";
-    $("#voiceBar").classList.remove("hidden");
-    const _mb=$("#modalMicBtn"); if(_mb) _mb.classList.add("listening");
-  }catch(e){ toast("Voice input is not available right now"); }
+  recogFails = 0;
+  recogStartedAt = Date.now();
+  recogActive = true;
+  $("#voiceText").textContent = "Listening\u2026 describe the task: owner, customer, type, due date, priority.";
+  $("#voiceBar").classList.remove("hidden");
+  const mb = $("#modalMicBtn"); if(mb) mb.classList.add("listening");
+  startRecogInstance();
 }
+
 function stopVoice(commit){
   recogActive = false;
+  if(recogRestartTimer){ clearTimeout(recogRestartTimer); recogRestartTimer = null; }
   $("#voiceBar").classList.add("hidden");
-  const _mb2=$("#modalMicBtn"); if(_mb2) _mb2.classList.remove("listening");
-  if(recog){ try{ recog.onend=null; recog.stop(); }catch(e){} recog=null; }
+  const mb2 = $("#modalMicBtn"); if(mb2) mb2.classList.remove("listening");
+  if(recog){ try{ recog.onend = null; recog.onresult = null; recog.onerror = null; recog.stop(); }catch(e){} recog = null; }
   const text = recogText.trim();
   recogText = "";
   if(commit && text){ const p = parseVoice(text); p.source = "voice"; openTaskModal(null, p); }
   else if(commit) toast("Didn't catch anything - tap the mic and try again");
 }
+
 /* test hook: simulate a dictated transcript end to end (parse + prefilled modal) */
 window.__tbVoiceTest = text => { const p = parseVoice(text); p.source = "voice"; openTaskModal(null, p); };
+window.__tbVoiceSelfTest = runVoiceSelfTest;
+window.__tbVoiceBank = voiceBank;
+
+/* On-phone self-test: runs the REAL capture pipeline (banking, dedupe,
+   auto-restart) against a mock engine that mimics Android's worst case:
+   session 1 delivers a final, re-delivers it, grows it, then dies mid-
+   sentence; session 2 (auto-restarted) re-delivers everything from scratch
+   plus new words. The heard text must read exactly once. */
+function runVoiceSelfTest(){
+  if(recogActive){ toast("Stop the mic first, then run the self-test"); return; }
+  const scripts = [
+    [["RSP proposal", true], ["RSP proposal", true], ["RSP proposal owned by Ankit", true], "END"],
+    [["RSP proposal owned by Ankit due Friday", true], ["RSP proposal owned by Ankit due Friday high priority", true], "END"],
+    [] /* third session stays silent until the test taps stop */
+  ];
+  let session = 0;
+  function MockSR(){}
+  MockSR.prototype.start = function(){
+    const script = scripts[Math.min(session, scripts.length - 1)];
+    session++;
+    const r = this;
+    let t = 200;
+    script.forEach(step=>{
+      if(step === "END"){ setTimeout(()=>{ if(r.onend) r.onend(); }, t); t += 200; }
+      else{
+        const txt = step[0];
+        setTimeout(()=>{
+          if(r.onresult) r.onresult({resultIndex:0, results:[{isFinal:true, 0:{transcript:txt}, length:1}]});
+        }, t);
+        t += 250;
+      }
+    });
+  };
+  MockSR.prototype.stop = function(){ const r = this; setTimeout(()=>{ if(r.onend) r.onend(); }, 50); };
+  SR_OVERRIDE = MockSR;
+  toast("Self-test running\u2026 simulating a choppy Android mic session");
+  startVoice();
+  /* let both scripted sessions + restarts play out, then tap stop like a user */
+  setTimeout(()=>{
+    const heard = recogText.trim();
+    SR_OVERRIDE = null;
+    stopVoice(true);
+    const ok = heard === "RSP proposal owned by Ankit due Friday high priority";
+    setTimeout(()=>toast(ok
+      ? "Self-test passed - each word heard exactly once"
+      : "Self-test result in the Heard box - if text repeats, send me a screenshot"), 600);
+  }, 2600);
+}
 
 /* ---------- task modal ---------- */
 function opts(list, sel, placeholder){
@@ -763,7 +867,8 @@ function openTaskModal(id, prefill){
   $$("#fStatus button").forEach(b=>b.addEventListener("click", ()=>{ stat=b.dataset.s; $$("#fStatus button").forEach(x=>x.classList.toggle("active",x===b)); }));
   if(!id){ const p = $("#vhPanel"); p.innerHTML = voiceHintsHTML();
     $("#vhBtn").addEventListener("click", ()=>p.classList.toggle("hidden"));
-    $("#modalMicBtn").addEventListener("click", startVoice); }
+    $("#modalMicBtn").addEventListener("click", startVoice);
+    $("#vhSelfTest").addEventListener("click", runVoiceSelfTest); }
   $("#taskCancel").addEventListener("click", closeModal);
   if(id) $("#taskDelete").addEventListener("click", ()=>{
     pendingDeletes.push(id);
