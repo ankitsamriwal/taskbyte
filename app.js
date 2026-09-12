@@ -547,7 +547,7 @@ function parseDuePhrase(p){
     if(!yr && d < todayStart()) d.setFullYear(d.getFullYear()+1);
     return dISO(d);
   }
-  m = p.match(/^(?:on )?the (\d{1,2})(?:st|nd|rd|th)?$/);
+  m = p.match(/^(?:on )?(?:the )?(\d{1,2})(?:st|nd|rd|th)?$/);
   if(m){
     let d = new Date(todayStart().getFullYear(), todayStart().getMonth(), +m[1]);
     if(d < todayStart()) d.setMonth(d.getMonth()+1);
@@ -602,9 +602,28 @@ function parseVoice(raw){
           }
           if(name!=null){ res[f.key] = name; eat(m.index, capStart + frag.length); }
           else {
-            /* spoken name is not in the configured lists - offer it as a new category */
-            const nm = m[1].trim().replace(/\s+/g," ").replace(/\b\w/g, ch=>ch.toUpperCase());
-            if(nm){ res[f.key+"New"] = nm; eat(m.index, capStart + m[1].length); }
+            /* not in this field's list - maybe the name belongs to another
+               field's list: "prepare slides for Ankit" says "for" (a customer
+               label) but Ankit is a configured owner, so it lands on owner,
+               not as a bogus "(new)" customer */
+            let otherHit = null, otherKey = null;
+            VOICE_FIELDS.forEach(of=>{
+              if(of===f || !of.fromList || otherHit) return;
+              let frag2 = m[1], nm2 = null;
+              while(frag2 && nm2==null){
+                nm2 = matchCategory(frag2, state[of.fromList]);
+                if(nm2==null){ const cut = frag2.lastIndexOf(" "); frag2 = cut>0 ? frag2.slice(0,cut) : ""; }
+              }
+              if(nm2!=null){ otherHit = frag2; otherKey = of.key; }
+            });
+            if(otherHit && res[otherKey]==null){
+              res[otherKey] = matchCategory(otherHit, state[VOICE_FIELDS.find(of=>of.key===otherKey).fromList]);
+              eat(m.index, capStart + otherHit.length);
+            } else {
+              /* spoken name is not in the configured lists - offer it as a new category */
+              const nm = m[1].trim().replace(/\s+/g," ").replace(/\b\w/g, ch=>ch.toUpperCase());
+              if(nm){ res[f.key+"New"] = nm; eat(m.index, capStart + m[1].length); }
+            }
           }
         } else if(f.parse){
           /* walk each candidate capture back word by word until the phrase
@@ -714,8 +733,9 @@ function parseVoice(raw){
     }
   }
 
-  /* title = what is left after the field clauses are lifted out */
-  let title = t.replace(/\s+/g," ").trim();
+  /* title = what is left after the field clauses are lifted out - built from
+     tOrig so the speaker's casing survives ("RSP proposal", not "Rsp proposal") */
+  let title = tOrig.replace(/\s+/g," ").trim();
   title = title.replace(/^(add|create|new)\s+(a\s+)?(task\s+)?/i,"").replace(/^task\s+/i,"").replace(/^remind me to\s+/i,"").replace(/^on\s+/i,"").trim();
   if(title) title = title.charAt(0).toUpperCase() + title.slice(1);
   res.title = title || raw.charAt(0).toUpperCase()+raw.slice(1);
@@ -759,13 +779,50 @@ function voiceBank(banked, chunk){
   const b = banked.trim(), c = chunk.trim();
   if(!c) return b;
   if(!b) return c;
-  const bl = b.toLowerCase(), cl = c.toLowerCase();
-  if(bl === cl || bl.endsWith(cl)) return b; /* pure re-delivery of what we have */
-  if(bl.startsWith(cl)) return b; /* re-delivery of the start of the utterance (engine restarted and replayed from scratch) */
-  const max = Math.min(bl.length, cl.length);
-  for(let k = max; k > 0; k--){
-    if(bl.endsWith(cl.slice(0, k))){
-      const rest = c.slice(k).trim();
+  /* compare normalized word tokens: case and punctuation are engine noise
+     ("proposal," vs "proposal") and must not defeat the dedupe. Output words
+     come from the original-casing tokens so the heard text keeps how the
+     speaker's words were written */
+  const toks = s => (s.toLowerCase().match(/[a-z0-9]+/g) || []);
+  const origToks = s => (s.match(/[A-Za-z0-9]+/g) || []);
+  const bw = toks(b), cw = toks(c), ow = origToks(c);
+  const bn = bw.join(" "), cn = cw.join(" ");
+  if(bn === cn || bn.endsWith(cn)) return b; /* pure re-delivery of what we have */
+  if(bn.startsWith(cn)) return b; /* replay of the start of the utterance */
+  /* two words count as equal when they match exactly, one is a prefix of the
+     other (engine revising mid-word: "rishab" -> "rishabh", "bug" -> "bugs"),
+     or they differ by one letter (re-recognition of the same word) */
+  const edit1 = (a,b2) => {
+    if(Math.abs(a.length-b2.length) > 1) return false;
+    let i=0, j=0, edits=0;
+    while(i<a.length && j<b2.length){
+      if(a[i]===b2[j]){ i++; j++; continue; }
+      if(++edits>1) return false;
+      if(a.length>b2.length) i++;
+      else if(b2.length>a.length) j++;
+      else { i++; j++; }
+    }
+    return edits + (a.length-i) + (b2.length-j) <= 1;
+  };
+  const close = (a,b2) => a===b2 || (a.length>=3 && b2.startsWith(a)) || (b2.length>=3 && a.startsWith(b2)) || edit1(a,b2);
+  /* full re-take: the engine re-recognized the whole utterance from scratch
+     with corrections or additions ("call rishab..." -> "call rishabh... due
+     monday"). Every banked word fuzzy-matches the chunk's opening words in
+     order - keep the newer, more complete take instead of appending a dup */
+  if(cw.length >= bw.length){
+    let ok = cw.length > 0;
+    for(let i=0;i<bw.length;i++) if(!close(bw[i], cw[i])){ ok=false; break; }
+    if(ok) return ow.join(" ");
+  }
+  /* suffix/prefix overlap: the banked tail equals the start of the new final -
+     append only the genuinely new words, so a word boundary is never split
+     (no more "bug" + "s high priority") */
+  const max = Math.min(bw.length, cw.length);
+  for(let k=max; k>0; k--){
+    let ok = true;
+    for(let i=0;i<k;i++) if(!close(bw[bw.length-k+i], cw[i])){ ok=false; break; }
+    if(ok){
+      const rest = ow.slice(k).join(" ");
       return rest ? b + " " + rest : b;
     }
   }
@@ -814,7 +871,13 @@ function startRecogInstance(){
   }catch(e){
     recog = null;
     recogFails++;
-    if(recogFails >= 3){ stopVoice(false); toast("Voice input is not available right now"); }
+    if(recogFails >= 3){
+      /* engine keeps refusing to restart - commit whatever was heard so a
+         dying session never silently eats the dictation */
+      const hadText = recogText.trim().length > 0;
+      stopVoice(hadText);
+      if(!hadText) toast("Voice input is not available right now");
+    }
     else recogRestartTimer = setTimeout(()=>{ if(recogActive) startRecogInstance(); }, 600);
   }
 }
@@ -862,7 +925,7 @@ function runVoiceSelfTest(){
   if(recogActive){ toast("Stop the mic first, then run the self-test"); return; }
   const scripts = [
     [["RSP proposal", true], ["RSP proposal", true], ["RSP proposal owned by Ankit", true], "END"],
-    [["RSP proposal owned by Ankit due Friday", true], ["RSP proposal owned by Ankit due Friday high priority", true], "END"],
+    [["RSP proposal owned by Ankit due Friday", true], ["RSP proposal owned by Ankit due Friday high priority", true], ["RSP proposals owned by Ankit, due Friday high priority", true], "END"],
     [] /* third session stays silent until the test taps stop */
   ];
   let session = 0;
@@ -892,7 +955,7 @@ function runVoiceSelfTest(){
     const heard = recogText.trim();
     SR_OVERRIDE = null;
     stopVoice(true);
-    const ok = heard === "RSP proposal owned by Ankit due Friday high priority";
+    const ok = heard === "RSP proposals owned by Ankit due Friday high priority";
     setTimeout(()=>toast(ok
       ? "Self-test passed - each word heard exactly once"
       : "Self-test result in the Heard box - if text repeats, send me a screenshot"), 600);
